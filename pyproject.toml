@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "sd"
+version = "0.1.0"
+description = ""
+authors = ["Enzo Santos <enzo.santos29@hotmail.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+simpy = "^4.1.1"
+numpy = "^2.1.0"
+matplotlib = "^3.9.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
