@@ -1,7 +1,9 @@
 import dataclasses
 import functools
 import itertools
+import os
 import statistics
+import tomllib
 import typing
 
 import arrow.locales
@@ -47,7 +49,12 @@ class Estatisticas:
 
 class ModeloBarExpresso:
     _rnd: numpy.random.Generator
+    _deve_exibir_log: bool
     _estatisticas: Estatisticas
+    _qtd_funcionarios: int
+    _qtd_copos: int
+    _qtd_cadeiras: int
+    _qtd_copos_pia: int
 
     _env: simpy.Environment
     _store_funcionarios: simpy.Store
@@ -59,8 +66,23 @@ class ModeloBarExpresso:
     def estatisticas(self) -> Estatisticas:
         return self._estatisticas
 
-    def __init__(self):
-        self._rnd = numpy.random.default_rng(42)
+    def __init__(
+            self,
+            *,
+            seed: int | None,
+            qtd_funcionarios: int,
+            qtd_cadeiras: int,
+            qtd_copos: int,
+            qtd_copos_pia: int,
+            deve_exibir_log: bool = False,
+    ):
+        self._qtd_funcionarios = qtd_funcionarios
+        self._qtd_cadeiras = qtd_cadeiras
+        self._qtd_copos = qtd_copos
+        self._qtd_copos_pia = qtd_copos_pia
+        self._deve_exibir_log = deve_exibir_log
+
+        self._rnd = numpy.random.default_rng(seed)
         self._estatisticas = Estatisticas(
             no_pedidos_consumidos=0,
             tempos_estadia_cliente=[],
@@ -72,19 +94,19 @@ class ModeloBarExpresso:
 
     def inicia(self, env: simpy.Environment) -> None:
         # O bar possui 2 funcionários
-        self._store_funcionarios = simpy.Store(env, capacity=2)
-        for idx_funcionario in range(2):
+        self._store_funcionarios = simpy.Store(env, capacity=self._qtd_funcionarios)
+        for idx_funcionario in range(self._qtd_funcionarios):
             self._store_funcionarios.put(Funcionario(id=idx_funcionario + 1))
 
         # O bar possui 20 copos
-        self._store_copos = simpy.Store(env, capacity=20)
-        for idx_copo in range(20):
+        self._store_copos = simpy.Store(env, capacity=self._qtd_copos)
+        for idx_copo in range(self._qtd_copos):
             self._store_copos.put(Copo(id=idx_copo + 1, limpo=True))
 
         # O bar possui um balcão com 6 cadeiras
-        self._resource_cadeiras = simpy.Resource(env, capacity=6)
+        self._resource_cadeiras = simpy.Resource(env, capacity=self._qtd_cadeiras)
         # Como a pia é pequena, só pode ficar 6 copos sujos no máximo
-        self._resource_lavagem = simpy.Resource(env, capacity=6)
+        self._resource_lavagem = simpy.Resource(env, capacity=self._qtd_copos_pia)
 
         self._eventos_preparo = simpy.Store(env)
         self._eventos_coleta = simpy.Store(env)
@@ -93,7 +115,7 @@ class ModeloBarExpresso:
         env.process(self._processa_funcionario__coleta(env))
 
     def _log(self, env: simpy.Environment, *args: str):
-        if True:
+        if self._deve_exibir_log:
             print(f'{env.now:05.2f}', *args, sep=': ')
 
     _eventos_preparo: simpy.Store
@@ -253,36 +275,70 @@ class ModeloBarExpresso:
 
 
 def main() -> None:
+    try:
+        with open(os.path.join(os.path.dirname(os.getcwd()), 'config.toml'), 'rb') as f:
+            dados = tomllib.load(f)
+    except FileNotFoundError:
+        dados = {}
+
+    dados_geral = dados.get('geral', {})
+    seed = dados_geral.get('seed')
+
+    dados_modelos = dados.get('modelos', {})
+    dados_modelo = dados_modelos.get('bar-expresso', {})
+    qtd_cadeiras = dados_modelo.get('qtd-cadeiras', 6)
+    qtd_funcionarios = dados_modelo.get('qtd-funcionarios', 2)
+    qtd_copos = dados_modelo.get('qtd-copos', 20)
+    qtd_copos_pia = dados_modelo.get('qtd-copos-pia', 6)
+
+    dados_grafico = dados.get('grafico', {})
+    deve_exibir_grafico = dados_grafico.get('exibir', False)
+    if not deve_exibir_grafico:
+        env = simpy.Environment()
+        modelo = ModeloBarExpresso(
+            seed=seed,
+            qtd_cadeiras=qtd_cadeiras,
+            qtd_funcionarios=qtd_funcionarios,
+            qtd_copos=qtd_copos,
+            qtd_copos_pia=qtd_copos_pia,
+            deve_exibir_log=True,
+        )
+        modelo.inicia(env)
+        env.run(until=70)
+
+        print(f'Número de clientes: {len(modelo.estatisticas.tempos_estadia_cliente)}')
+        print(f'Número de pedidos: {len(modelo.estatisticas.tempos_espera_consumir_cliente)}')
+        log_stats('Tempo estadia (por cliente)', modelo.estatisticas.tempos_estadia_cliente)
+        log_stats('Tempo espera p/ sentar (por cliente)', modelo.estatisticas.tempos_espera_sentar_cliente)
+        log_stats('Tempo espera p/ pedir (por pedido)', modelo.estatisticas.tempos_espera_pedir_cliente)
+        log_stats('Tempo espera p/ consumir (por pedido)', modelo.estatisticas.tempos_espera_consumir_cliente)
+        log_stats('Tempo preparo (por pedido)', modelo.estatisticas.tempos_preparo)
+        return
+
     x = []
     y0 = []
     y1 = []
     y2 = []
     y3 = []
     y4 = []
-    for until in range(30, 360+1, 30):
+    for until in range(30, 360 + 1, 30):
         env = simpy.Environment()
-        modelo = ModeloBarExpresso()
+        modelo = ModeloBarExpresso(
+            seed=seed,
+            qtd_cadeiras=qtd_cadeiras,
+            qtd_funcionarios=qtd_funcionarios,
+            qtd_copos=qtd_copos,
+            qtd_copos_pia=qtd_copos_pia,
+            deve_exibir_log=False,
+        )
         modelo.inicia(env)
         env.run(until=until)
 
         x.append(until)
-
-        print(f'Número de clientes: {len(modelo.estatisticas.tempos_estadia_cliente)}')
-        print(f'Número de pedidos: {len(modelo.estatisticas.tempos_espera_consumir_cliente)}')
-
-        # log_stats('Tempo estadia (por cliente)', modelo.estatisticas.tempos_estadia_cliente)
         y0.append(statistics.mean(modelo.estatisticas.tempos_estadia_cliente))
-
-        # log_stats('Tempo espera p/ sentar (por cliente)', modelo.estatisticas.tempos_espera_sentar_cliente)
         y1.append(statistics.mean(modelo.estatisticas.tempos_espera_sentar_cliente))
-
-        # log_stats('Tempo espera p/ pedir (por pedido)', modelo.estatisticas.tempos_espera_pedir_cliente)
         y2.append(statistics.mean(modelo.estatisticas.tempos_espera_pedir_cliente))
-
-        # log_stats('Tempo espera p/ consumir (por pedido)', modelo.estatisticas.tempos_espera_consumir_cliente)
         y3.append(statistics.mean(modelo.estatisticas.tempos_espera_consumir_cliente))
-
-        # log_stats('Tempo preparo (por pedido)', modelo.estatisticas.tempos_preparo)
         y4.append(statistics.mean(modelo.estatisticas.tempos_preparo))
 
     fig, ax = plt.subplots()
@@ -295,8 +351,8 @@ def main() -> None:
     ax.set_ylabel('Tempo médio da ação (min)')
     ax.set_xlim(30, 360)
     ax.set_ylim(0, 120)
-    ax.set_xticks(list(range(30, 360+1, 30)))
-    ax.set_yticks(list(range(0, 120+1, 15)))
+    ax.set_xticks(list(range(30, 360 + 1, 30)))
+    ax.set_yticks(list(range(0, 120 + 1, 15)))
     ax.legend()
     plt.show()
 
