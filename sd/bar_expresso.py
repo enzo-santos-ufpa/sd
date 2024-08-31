@@ -1,4 +1,5 @@
 import dataclasses
+import enum
 import functools
 import itertools
 import os
@@ -10,7 +11,8 @@ import arrow.locales
 import numpy.random
 import simpy
 import simpy.resources.resource
-from matplotlib import pyplot as plt
+
+import sd
 
 
 @dataclasses.dataclass
@@ -54,7 +56,15 @@ class Estatisticas:
     tempos_preparo: list[float]
 
 
-class ModeloBarExpresso:
+class _Metrica(enum.Enum):
+    TEMPO_ESTADIA_CLIENTE = 0
+    TEMPO_ESPERA_SENTAR_CLIENTE = 1
+    TEMPO_ESPERA_PEDIR_CLIENTE = 2
+    TEMPO_ESPERA_CONSUMIR_CLIENTE = 3
+    TEMPO_PREPARO = 4
+
+
+class ModeloBarExpresso(sd.Modelo[_Metrica]):
     _rnd: numpy.random.Generator
     _deve_exibir_log: bool
     _estatisticas: Estatisticas
@@ -68,6 +78,22 @@ class ModeloBarExpresso:
     _store_copos: simpy.Store
     _resource_cadeiras: simpy.Resource
     _resource_lavagem: simpy.Resource
+
+    @typing.override
+    def calcula_metrica(self, metrica: _Metrica) -> list[float]:
+        match metrica:
+            case _Metrica.TEMPO_PREPARO:
+                return self._estatisticas.tempos_preparo
+            case _Metrica.TEMPO_ESTADIA_CLIENTE:
+                return self._estatisticas.tempos_estadia_cliente
+            case _Metrica.TEMPO_ESPERA_PEDIR_CLIENTE:
+                return self._estatisticas.tempos_espera_pedir_cliente
+            case _Metrica.TEMPO_ESPERA_CONSUMIR_CLIENTE:
+                return self._estatisticas.tempos_espera_consumir_cliente
+            case _Metrica.TEMPO_ESPERA_SENTAR_CLIENTE:
+                return self._estatisticas.tempos_espera_sentar_cliente
+            case _:
+                typing.assert_never(metrica)
 
     @property
     def estatisticas(self) -> Estatisticas:
@@ -144,7 +170,7 @@ class ModeloBarExpresso:
         log('chega')
         tempo_inicio_estadia = env.now
 
-        copo: Copo | None = None
+        copo_cliente: Copo | None = None
 
         tempo_inicio_espera_sentar = env.now
         with self._resource_cadeiras.request() as request_cadeira:
@@ -186,10 +212,13 @@ class ModeloBarExpresso:
 
                 evento_conclusao_preparo = env.event()
                 evento_preparo.succeed(
-                    value=Preparo(copo=copo, evento_conclusao=evento_conclusao_preparo),
+                    value=Preparo(copo=copo_cliente, evento_conclusao=evento_conclusao_preparo),
                 )
-                copo: Copo = yield evento_conclusao_preparo  # Aguarda até que o evento seja concluído pelo funcionário
+                # Aguarda até que o evento seja concluído pelo funcionário
+                copo_pedido: Copo = yield evento_conclusao_preparo
                 self._estatisticas.tempos_espera_consumir_cliente.append(env.now - tempo_inicio_espera_consumir)
+                if copo_cliente is None:
+                    copo_cliente = copo_pedido
 
                 # [Atividade] Consume pedido
                 # Os clientes levam em média 3 min para consumir uma bebida de acordo
@@ -200,12 +229,12 @@ class ModeloBarExpresso:
                 self._estatisticas.no_pedidos_consumidos += 1
 
         log('vai embora')
-        if copo is not None:
+        if copo_cliente is not None:
             evento_retirada = env.event()
             self._eventos_retirada.put(evento_retirada)  # Coloca um evento na fila de retirada do funcionário
             evento_retirada.succeed(
                 value=Retirada(
-                    copo=copo,
+                    copo=copo_cliente,
                     id_cliente=id_cliente,
                     evento_conclusao=None,
                 )
@@ -355,59 +384,35 @@ def main() -> None:
         log_stats('Tempo preparo (por pedido)', modelo.estatisticas.tempos_preparo)
         return
 
-    x = []
-    y0 = []
-    y1 = []
-    y2 = []
-    y3 = []
-    y4 = []
-    for until in range(30, 360 + 1, 30):
-        env = simpy.Environment()
-        modelo = ModeloBarExpresso(
+    def descritor_metrica(metrica: _Metrica) -> str:
+        match metrica:
+            case _Metrica.TEMPO_ESTADIA_CLIENTE:
+                return 'Estadia'
+            case _Metrica.TEMPO_ESPERA_PEDIR_CLIENTE:
+                return 'Espera p/ pedir'
+            case _Metrica.TEMPO_ESPERA_CONSUMIR_CLIENTE:
+                return 'Espera p/ consumir'
+            case _Metrica.TEMPO_ESPERA_SENTAR_CLIENTE:
+                return 'Espera p/ sentar'
+            case _Metrica.TEMPO_PREPARO:
+                return 'Preparo'
+            case _:
+                typing.assert_never(metrica)
+
+    sd.plot(
+        lambda: ModeloBarExpresso(
             seed=seed,
             qtd_cadeiras=qtd_cadeiras,
             qtd_funcionarios=qtd_funcionarios,
             qtd_copos=qtd_copos,
             qtd_copos_pia=qtd_copos_pia,
             deve_exibir_log=False,
-        )
-        modelo.inicia(env)
-        env.run(until=until)
-
-        x.append(until)
-        y0.append(statistics.mean(modelo.estatisticas.tempos_estadia_cliente))
-        y1.append(statistics.mean(modelo.estatisticas.tempos_espera_sentar_cliente))
-        y2.append(statistics.mean(modelo.estatisticas.tempos_espera_pedir_cliente))
-        y3.append(statistics.mean(modelo.estatisticas.tempos_espera_consumir_cliente))
-        y4.append(statistics.mean(modelo.estatisticas.tempos_preparo))
-
-    fig, ax = plt.subplots()
-    ax.plot(x, y0, label='Estadia')
-    ax.plot(x, y1, label='Espera p/ sentar')
-    ax.plot(x, y2, label='Espera p/ pedir')
-    ax.plot(x, y3, label='Espera p/ consumir')
-    ax.plot(x, y4, label='Preparo')
-    ax.set_xlabel('Tempo da simulação')
-    ax.set_ylabel('Tempo médio da ação')
-
-    def format_major(value: float, _) -> str:
-        hours, minutes = divmod(value, 60)
-        tokens: list[str] = []
-        if hours > 0:
-            tokens.append(f'{hours}h')
-        if minutes > 0:
-            tokens.append(f'{minutes}m')
-        return ''.join(tokens)
-
-    ax.xaxis.set_major_formatter(format_major)
-    ax.yaxis.set_major_formatter(format_major)
-    ax.set_xlim(30, 360)
-    ax.set_ylim(0, 120)
-    ax.set_xticks(list(range(30, 360 + 1, 30)))
-    ax.set_yticks(list(range(0, 120 + 1, 15)))
-    ax.grid(axis='y')
-    ax.legend()
-    plt.show()
+        ),
+        metricas=list(_Metrica),
+        descritor_metrica=descritor_metrica,
+        x_range=(30, 360, 30),
+        y_range=(0, 120, 15),
+    )
 
 
 def log_stats(prefix: str, values: list[float]) -> None:
