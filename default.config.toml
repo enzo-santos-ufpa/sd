@@ -1,5 +1,6 @@
 [geral]
 seed = 42
+tempo-maximo = 60
 
 [grafico]
 exibir = false

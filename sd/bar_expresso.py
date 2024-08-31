@@ -322,6 +322,7 @@ def main() -> None:
 
     dados_geral = dados.get('geral', {})
     seed = dados_geral.get('seed')
+    tempo_maximo = dados_geral.get('tempo-maximo', 60)
 
     dados_modelos = dados.get('modelos', {})
     dados_modelo = dados_modelos.get('bar-expresso', {})
@@ -343,7 +344,7 @@ def main() -> None:
             deve_exibir_log=True,
         )
         modelo.inicia(env)
-        env.run(until=70)
+        env.run(until=tempo_maximo)
 
         print(f'Número de clientes: {len(modelo.estatisticas.tempos_estadia_cliente)}')
         print(f'Número de pedidos: {len(modelo.estatisticas.tempos_espera_consumir_cliente)}')
