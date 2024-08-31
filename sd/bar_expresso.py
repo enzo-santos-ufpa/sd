@@ -387,12 +387,25 @@ def main() -> None:
     ax.plot(x, y2, label='Espera p/ pedir')
     ax.plot(x, y3, label='Espera p/ consumir')
     ax.plot(x, y4, label='Preparo')
-    ax.set_xlabel('Tempo da simulação (min)')
-    ax.set_ylabel('Tempo médio da ação (min)')
+    ax.set_xlabel('Tempo da simulação')
+    ax.set_ylabel('Tempo médio da ação')
+
+    def format_major(value: float, _) -> str:
+        hours, minutes = divmod(value, 60)
+        tokens: list[str] = []
+        if hours > 0:
+            tokens.append(f'{hours}h')
+        if minutes > 0:
+            tokens.append(f'{minutes}m')
+        return ''.join(tokens)
+
+    ax.xaxis.set_major_formatter(format_major)
+    ax.yaxis.set_major_formatter(format_major)
     ax.set_xlim(30, 360)
     ax.set_ylim(0, 120)
     ax.set_xticks(list(range(30, 360 + 1, 30)))
     ax.set_yticks(list(range(0, 120 + 1, 15)))
+    ax.grid(axis='y')
     ax.legend()
     plt.show()
 
