@@ -33,6 +33,13 @@ class Preparo:
 
 
 @dataclasses.dataclass
+class Retirada:
+    copo: Copo
+    id_cliente: int
+    evento_conclusao: simpy.Event | None
+
+
+@dataclasses.dataclass
 class Funcionario:
     id: int
 
@@ -110,9 +117,11 @@ class ModeloBarExpresso:
 
         self._eventos_preparo = simpy.Store(env)
         self._eventos_coleta = simpy.Store(env)
+        self._eventos_retirada = simpy.Store(env)
         env.process(self._processa_clientes(env))
         env.process(self._processa_funcionario__preparo(env))
         env.process(self._processa_funcionario__coleta(env))
+        env.process(self._processa_funcionario__retirada(env))
 
     def _log(self, env: simpy.Environment, *args: str):
         if self._deve_exibir_log:
@@ -120,6 +129,7 @@ class ModeloBarExpresso:
 
     _eventos_preparo: simpy.Store
     _eventos_coleta: simpy.Store
+    _eventos_retirada: simpy.Store
 
     def _processa_clientes(self, env: simpy.Environment) -> typing.Generator[simpy.Event, None, None]:
         for id_cliente in itertools.count(start=1):
@@ -154,7 +164,7 @@ class ModeloBarExpresso:
                 tempo_inicio_espera_pedir = env.now
 
                 evento_coleta = env.event()
-                yield self._eventos_coleta.put(evento_coleta)  # Coloca um evento na fila de coleta do funcionário
+                self._eventos_coleta.put(evento_coleta)  # Coloca um evento na fila de coleta do funcionário
 
                 evento_conclusao_coleta = env.event()
                 evento_coleta.succeed(
@@ -172,7 +182,7 @@ class ModeloBarExpresso:
                 log(f'pedido {idx_pedido + 1}/{qtd_pedidos}', 'aguarda pedido ser preparado')
 
                 evento_preparo = env.event()
-                yield self._eventos_preparo.put(evento_preparo)  # Coloca um evento na fila de preparo do funcionário
+                self._eventos_preparo.put(evento_preparo)  # Coloca um evento na fila de preparo do funcionário
 
                 evento_conclusao_preparo = env.event()
                 evento_preparo.succeed(
@@ -189,8 +199,17 @@ class ModeloBarExpresso:
 
                 self._estatisticas.no_pedidos_consumidos += 1
 
+        log('vai embora')
         if copo is not None:
-            yield self._store_copos.put(copo)
+            evento_retirada = env.event()
+            self._eventos_retirada.put(evento_retirada)  # Coloca um evento na fila de retirada do funcionário
+            evento_retirada.succeed(
+                value=Retirada(
+                    copo=copo,
+                    id_cliente=id_cliente,
+                    evento_conclusao=None,
+                )
+            )
 
         self._estatisticas.tempos_estadia_cliente.append(env.now - tempo_inicio_estadia)
 
@@ -209,7 +228,7 @@ class ModeloBarExpresso:
             log(f'coleta pedido {coleta.id_pedido} do cliente {coleta.id_cliente}')
             yield env.timeout(abs(self._rnd.normal(0.7, scale=0.3)))
 
-            yield self._store_funcionarios.put(funcionario)
+            self._store_funcionarios.put(funcionario)
 
             coleta.evento_conclusao.succeed()
 
@@ -261,7 +280,7 @@ class ModeloBarExpresso:
             log('coloca copo no freezer')
 
             # Desocupa funcionário
-            yield self._store_funcionarios.put(funcionario)
+            self._store_funcionarios.put(funcionario)
 
             # (Fila) Aguarda copo congelar
             # O copo deve ficar no freezer por 4min antes de ser usado para servir
@@ -272,6 +291,26 @@ class ModeloBarExpresso:
 
             log('retira copo do freezer')
             preparo.evento_conclusao.succeed(value=copo)
+
+    def _processa_funcionario__retirada(self, env: simpy.Environment) -> typing.Generator[simpy.Event, None, None]:
+        while True:
+            # Aguarda um evento ser colocado na fila de retirada
+            evento_retirada = yield self._eventos_retirada.get()
+            retirada: Retirada = yield evento_retirada
+
+            # (Fila) Aguarda funcionário
+            funcionario: Funcionario = yield self._store_funcionarios.get()
+            log = functools.partial(self._log, env, f'funcionário {funcionario.id}')
+
+            # [Atividade] Recolhe o copo da mesa
+            log(f'recolhe o copo da mesa do cliente {retirada.id_cliente}')
+            yield env.timeout(abs(self._rnd.normal(0.7, scale=0.3)))
+
+            self._store_copos.put(retirada.copo)
+
+            self._store_funcionarios.put(funcionario)
+            if evento_conclusao := retirada.evento_conclusao:
+                evento_conclusao.succeed()
 
 
 def main() -> None:
