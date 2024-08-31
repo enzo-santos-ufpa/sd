@@ -3,10 +3,24 @@ import statistics
 import typing
 
 import matplotlib.pyplot as plt
+import numpy.random
 import simpy
+
+Generator = typing.Generator[simpy.Event, typing.Any, typing.Any]
 
 
 class Modelo[M](abc.ABC):
+    _rnd: numpy.random.Generator
+    _deve_exibir_log: bool
+
+    def __init__(self, *, deve_exibir_log: bool, seed: int | None = None) -> None:
+        self._deve_exibir_log = deve_exibir_log
+        self._rnd = numpy.random.default_rng(seed)
+
+    def _log(self, env: simpy.Environment, *args: str) -> None:
+        if self._deve_exibir_log:
+            print(f'{env.now:05.2f}', *args, sep=': ')
+
     @abc.abstractmethod
     def inicia(self, env: simpy.Environment) -> None:
         pass
@@ -47,7 +61,7 @@ def plot[M](
     ax.set_xlabel('Tempo da simulação')
     ax.set_ylabel('Tempo médio da ação')
 
-    def major_formatter(value: float, _: int) -> str:
+    def major_formatter(value: float, _: float) -> str:
         hours, minutes = divmod(value, 60)
         tokens: list[str] = []
         if hours > 0:

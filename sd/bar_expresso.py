@@ -8,7 +8,6 @@ import tomllib
 import typing
 
 import arrow.locales
-import numpy.random
 import simpy
 import simpy.resources.resource
 
@@ -65,15 +64,12 @@ class _Metrica(enum.Enum):
 
 
 class ModeloBarExpresso(sd.Modelo[_Metrica]):
-    _rnd: numpy.random.Generator
-    _deve_exibir_log: bool
     _estatisticas: Estatisticas
     _qtd_funcionarios: int
     _qtd_copos: int
     _qtd_cadeiras: int
     _qtd_copos_pia: int
 
-    _env: simpy.Environment
     _store_funcionarios: simpy.Store
     _store_copos: simpy.Store
     _resource_cadeiras: simpy.Resource
@@ -95,27 +91,24 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
             case _:
                 typing.assert_never(metrica)
 
-    @property
-    def estatisticas(self) -> Estatisticas:
-        return self._estatisticas
-
     def __init__(
             self,
             *,
-            seed: int | None,
             qtd_funcionarios: int,
             qtd_cadeiras: int,
             qtd_copos: int,
             qtd_copos_pia: int,
             deve_exibir_log: bool = False,
+            seed: int | None = None,
     ):
+        super().__init__(deve_exibir_log=deve_exibir_log, seed=seed)
+
         self._qtd_funcionarios = qtd_funcionarios
         self._qtd_cadeiras = qtd_cadeiras
         self._qtd_copos = qtd_copos
         self._qtd_copos_pia = qtd_copos_pia
         self._deve_exibir_log = deve_exibir_log
 
-        self._rnd = numpy.random.default_rng(seed)
         self._estatisticas = Estatisticas(
             no_pedidos_consumidos=0,
             tempos_estadia_cliente=[],
@@ -149,15 +142,11 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
         env.process(self._processa_funcionario__coleta(env))
         env.process(self._processa_funcionario__retirada(env))
 
-    def _log(self, env: simpy.Environment, *args: str):
-        if self._deve_exibir_log:
-            print(f'{env.now:05.2f}', *args, sep=': ')
-
     _eventos_preparo: simpy.Store
     _eventos_coleta: simpy.Store
     _eventos_retirada: simpy.Store
 
-    def _processa_clientes(self, env: simpy.Environment) -> typing.Generator[simpy.Event, None, None]:
+    def _processa_clientes(self, env: simpy.Environment) -> sd.Generator:
         for id_cliente in itertools.count(start=1):
             env.process(self._processa_cliente(env, id_cliente))
 
@@ -165,7 +154,7 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
             # de acordo com uma função exponencial
             yield env.timeout(self._rnd.exponential(4))
 
-    def _processa_cliente(self, env: simpy.Environment, id_cliente: int) -> typing.Generator[simpy.Event, None, None]:
+    def _processa_cliente(self, env: simpy.Environment, id_cliente: int) -> sd.Generator:
         log = functools.partial(self._log, env, f'cliente {id_cliente}')
         log('chega')
         tempo_inicio_estadia = env.now
@@ -242,7 +231,7 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
 
         self._estatisticas.tempos_estadia_cliente.append(env.now - tempo_inicio_estadia)
 
-    def _processa_funcionario__coleta(self, env: simpy.Environment) -> typing.Generator[simpy.Event, None, None]:
+    def _processa_funcionario__coleta(self, env: simpy.Environment) -> sd.Generator:
         while True:
             # Aguarda um evento ser colocado na fila de coleta
             evento_coleta = yield self._eventos_coleta.get()
@@ -261,7 +250,7 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
 
             coleta.evento_conclusao.succeed()
 
-    def _processa_funcionario__preparo(self, env: simpy.Environment) -> typing.Generator[simpy.Event, None, None]:
+    def _processa_funcionario__preparo(self, env: simpy.Environment) -> sd.Generator:
         while True:
             # Aguarda um evento ser colocado na fila de preparo
             evento_preparo = yield self._eventos_preparo.get()
@@ -321,7 +310,7 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
             log('retira copo do freezer')
             preparo.evento_conclusao.succeed(value=copo)
 
-    def _processa_funcionario__retirada(self, env: simpy.Environment) -> typing.Generator[simpy.Event, None, None]:
+    def _processa_funcionario__retirada(self, env: simpy.Environment) -> sd.Generator:
         while True:
             # Aguarda um evento ser colocado na fila de retirada
             evento_retirada = yield self._eventos_retirada.get()
@@ -375,13 +364,18 @@ def main() -> None:
         modelo.inicia(env)
         env.run(until=tempo_maximo)
 
-        print(f'Número de clientes: {len(modelo.estatisticas.tempos_estadia_cliente)}')
-        print(f'Número de pedidos: {len(modelo.estatisticas.tempos_espera_consumir_cliente)}')
-        log_stats('Tempo estadia (por cliente)', modelo.estatisticas.tempos_estadia_cliente)
-        log_stats('Tempo espera p/ sentar (por cliente)', modelo.estatisticas.tempos_espera_sentar_cliente)
-        log_stats('Tempo espera p/ pedir (por pedido)', modelo.estatisticas.tempos_espera_pedir_cliente)
-        log_stats('Tempo espera p/ consumir (por pedido)', modelo.estatisticas.tempos_espera_consumir_cliente)
-        log_stats('Tempo preparo (por pedido)', modelo.estatisticas.tempos_preparo)
+        tempos_estadia_cliente = modelo.calcula_metrica(_Metrica.TEMPO_ESTADIA_CLIENTE)
+        tempos_espera_sentar_cliente = modelo.calcula_metrica(_Metrica.TEMPO_ESPERA_SENTAR_CLIENTE)
+        tempos_espera_pedir_cliente = modelo.calcula_metrica(_Metrica.TEMPO_ESPERA_PEDIR_CLIENTE)
+        tempos_espera_consumir_cliente = modelo.calcula_metrica(_Metrica.TEMPO_ESPERA_CONSUMIR_CLIENTE)
+        tempos_preparo = modelo.calcula_metrica(_Metrica.TEMPO_PREPARO)
+        print(f'Número de clientes: {len(tempos_estadia_cliente)}')
+        print(f'Número de pedidos: {len(tempos_espera_consumir_cliente)}')
+        log_stats('Tempo estadia (por cliente)', tempos_estadia_cliente)
+        log_stats('Tempo espera p/ sentar (por cliente)', tempos_espera_sentar_cliente)
+        log_stats('Tempo espera p/ pedir (por pedido)', tempos_espera_pedir_cliente)
+        log_stats('Tempo espera p/ consumir (por pedido)', tempos_espera_consumir_cliente)
+        log_stats('Tempo preparo (por pedido)', tempos_preparo)
         return
 
     def descritor_metrica(metrica: _Metrica) -> str:
