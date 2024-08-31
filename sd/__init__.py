@@ -2,8 +2,8 @@ import abc
 import statistics
 import typing
 
+import matplotlib.pyplot as plt
 import simpy
-from matplotlib import pyplot as plt
 
 
 class Modelo[M](abc.ABC):
