@@ -47,3 +47,6 @@ python -m sd.clinica_medica
 python -m sd.lavanderia
 python -m sd.montagem
 ```
+
+Para alterar os parâmetros de cada simulação de modo centralizado, crie um arquivo local *config.toml*. Os argumentos
+que podem ser configurados neste arquivo estão especificados em *default.config.toml*.

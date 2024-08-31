@@ -2,19 +2,18 @@
 seed = 42
 
 [grafico]
-exibir = true
+exibir = false
 
 [modelos.centro-distribuicao]
 qtd-caminhoes = 5
 qtd-vans = 4
 qtd-funcionarios = 6
-tamanho-caminhao = 20
-tamanho-van = 8
-tamanho-deposito = 300
+tamanho-caminhao = 20 # m³
+tamanho-van = 8 # m³
+tamanho-deposito = 300 # m³
 
 [modelos.bar-expresso]
 qtd-cadeiras = 6
 qtd-funcionarios = 2
 qtd-copos = 20
 qtd-copos-pia = 6
-
