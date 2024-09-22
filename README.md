@@ -1,6 +1,6 @@
 # Trabalho 1 - Simulação Discreta
 
-Este repositório contém os códigos para os exercícios "Bar expresso" e "Montagem" da lista de exercícios do trabalho 1
+Este repositório contém as simulações do trabalho 1
 da disciplina de Simulação Discreta.
 
 ## Instalando
