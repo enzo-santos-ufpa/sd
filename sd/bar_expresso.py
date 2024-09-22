@@ -1,14 +1,7 @@
 import dataclasses
-import enum
 import functools
 import itertools
-import os
-import statistics
-import tomllib
-import typing
 
-import arrow.locales
-import simpy
 import simpy.resources.resource
 
 import sd
@@ -45,80 +38,34 @@ class Funcionario:
     id: int
 
 
-@dataclasses.dataclass
-class Estatisticas:
-    no_pedidos_consumidos: int
-    tempos_estadia_cliente: list[float]
-    tempos_espera_sentar_cliente: list[float]
-    tempos_espera_pedir_cliente: list[float]
-    tempos_espera_consumir_cliente: list[float]
-    tempos_preparo: list[float]
+class ModeloBarExpresso(metaclass=sd.ModeloMetaclass):
+    # Configuração do modelo
+    chave_modelo: str = 'bar-expresso'
+    unidade_tempo: str = 'minutos'
 
+    _qtd_funcionarios: int = sd.ParametroModelo(chave='qtd-funcionarios')
+    _qtd_cadeiras: int = sd.ParametroModelo(chave='qtd-cadeiras')
+    _qtd_copos: int = sd.ParametroModelo(chave='qtd-copos')
+    _qtd_copos_pia: int = sd.ParametroModelo(chave='qtd-copos-pia')
 
-class _Metrica(enum.Enum):
-    TEMPO_ESTADIA_CLIENTE = 0
-    TEMPO_ESPERA_SENTAR_CLIENTE = 1
-    TEMPO_ESPERA_PEDIR_CLIENTE = 2
-    TEMPO_ESPERA_CONSUMIR_CLIENTE = 3
-    TEMPO_PREPARO = 4
+    _no_pedidos_consumidos: int = sd.MetricaModelo(descricao='Número de pedidos consumidos')
+    _tempos_estadia_cliente: list[float] = sd.MetricaModelo(descricao='Tempo estadia')
+    _tempos_espera_sentar_cliente: list[float] = sd.MetricaModelo(descricao='Tempo espera p/ sentar')
+    _tempos_espera_pedir_cliente: list[float] = sd.MetricaModelo(descricao='Tempo espera p/ pedir')
+    _tempos_espera_consumir_cliente: list[float] = sd.MetricaModelo(descricao='Tempo espera p/ consumir')
+    _tempos_preparo: list[float] = sd.MetricaModelo(descricao='Tempo preparo')
 
-
-class ModeloBarExpresso(sd.Modelo[_Metrica]):
-    _estatisticas: Estatisticas
-    _qtd_funcionarios: int
-    _qtd_copos: int
-    _qtd_cadeiras: int
-    _qtd_copos_pia: int
-
+    # Implementação do modelo
     _store_funcionarios: simpy.Store
     _store_copos: simpy.Store
     _resource_cadeiras: simpy.Resource
     _resource_lavagem: simpy.Resource
 
-    @typing.override
-    def calcula_metrica(self, metrica: _Metrica) -> list[float]:
-        match metrica:
-            case _Metrica.TEMPO_PREPARO:
-                return self._estatisticas.tempos_preparo
-            case _Metrica.TEMPO_ESTADIA_CLIENTE:
-                return self._estatisticas.tempos_estadia_cliente
-            case _Metrica.TEMPO_ESPERA_PEDIR_CLIENTE:
-                return self._estatisticas.tempos_espera_pedir_cliente
-            case _Metrica.TEMPO_ESPERA_CONSUMIR_CLIENTE:
-                return self._estatisticas.tempos_espera_consumir_cliente
-            case _Metrica.TEMPO_ESPERA_SENTAR_CLIENTE:
-                return self._estatisticas.tempos_espera_sentar_cliente
-            case _:
-                typing.assert_never(metrica)
+    _eventos_preparo: simpy.Store
+    _eventos_coleta: simpy.Store
+    _eventos_retirada: simpy.Store
 
-    def __init__(
-            self,
-            *,
-            qtd_funcionarios: int,
-            qtd_cadeiras: int,
-            qtd_copos: int,
-            qtd_copos_pia: int,
-            deve_exibir_log: bool = False,
-            seed: int | None = None,
-    ):
-        super().__init__(deve_exibir_log=deve_exibir_log, seed=seed)
-
-        self._qtd_funcionarios = qtd_funcionarios
-        self._qtd_cadeiras = qtd_cadeiras
-        self._qtd_copos = qtd_copos
-        self._qtd_copos_pia = qtd_copos_pia
-        self._deve_exibir_log = deve_exibir_log
-
-        self._estatisticas = Estatisticas(
-            no_pedidos_consumidos=0,
-            tempos_estadia_cliente=[],
-            tempos_espera_sentar_cliente=[],
-            tempos_espera_pedir_cliente=[],
-            tempos_espera_consumir_cliente=[],
-            tempos_preparo=[],
-        )
-
-    def inicia(self, env: simpy.Environment) -> None:
+    def executa(self, env: simpy.Environment) -> None:
         # O bar possui 2 funcionários
         self._store_funcionarios = simpy.Store(env, capacity=self._qtd_funcionarios)
         for idx_funcionario in range(self._qtd_funcionarios):
@@ -142,10 +89,6 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
         env.process(self._processa_funcionario__coleta(env))
         env.process(self._processa_funcionario__retirada(env))
 
-    _eventos_preparo: simpy.Store
-    _eventos_coleta: simpy.Store
-    _eventos_retirada: simpy.Store
-
     def _processa_clientes(self, env: simpy.Environment) -> sd.Generator:
         for id_cliente in itertools.count(start=1):
             env.process(self._processa_cliente(env, id_cliente))
@@ -161,13 +104,14 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
 
         copo_cliente: Copo | None = None
 
-        tempo_inicio_espera_sentar = env.now
         with self._resource_cadeiras.request() as request_cadeira:
+            tempo_inicio_espera_sentar = env.now
+
             # (Fila) Aguarda cadeira
             yield request_cadeira
 
             # [Atividade] Ocupa cadeira
-            self._estatisticas.tempos_espera_sentar_cliente.append(env.now - tempo_inicio_espera_sentar)
+            self._tempos_espera_sentar_cliente.append(env.now - tempo_inicio_espera_sentar)
 
             # A probabilidade de um cliente tomar 1 copo é de 0,3; 2 copos 0,45; 3 copos 0,2; e 4 copos 0,05.
             qtd_pedidos = self._rnd.choice([1, 2, 3, 4], p=[0.3, 0.45, 0.2, 0.05])
@@ -190,7 +134,7 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
                     )
                 )
                 yield evento_conclusao_coleta  # Aguarda até que o evento seja concluído pelo funcionário
-                self._estatisticas.tempos_espera_pedir_cliente.append(env.now - tempo_inicio_espera_pedir)
+                self._tempos_espera_pedir_cliente.append(env.now - tempo_inicio_espera_pedir)
 
                 tempo_inicio_espera_consumir = env.now
                 # (Fila) Aguarda pedido ficar pronto
@@ -205,7 +149,7 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
                 )
                 # Aguarda até que o evento seja concluído pelo funcionário
                 copo_pedido: Copo = yield evento_conclusao_preparo
-                self._estatisticas.tempos_espera_consumir_cliente.append(env.now - tempo_inicio_espera_consumir)
+                self._tempos_espera_consumir_cliente.append(env.now - tempo_inicio_espera_consumir)
                 if copo_cliente is None:
                     copo_cliente = copo_pedido
 
@@ -215,7 +159,7 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
                 log(f'pedido {idx_pedido + 1}/{qtd_pedidos}', 'consome pedido')
                 yield env.timeout(abs(self._rnd.normal(3, scale=1)))
 
-                self._estatisticas.no_pedidos_consumidos += 1
+                self._no_pedidos_consumidos += 1
 
         log('vai embora')
         if copo_cliente is not None:
@@ -229,7 +173,7 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
                 )
             )
 
-        self._estatisticas.tempos_estadia_cliente.append(env.now - tempo_inicio_estadia)
+        self._tempos_estadia_cliente.append(env.now - tempo_inicio_estadia)
 
     def _processa_funcionario__coleta(self, env: simpy.Environment) -> sd.Generator:
         while True:
@@ -305,7 +249,7 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
             log('aguarda copo congelar')
             yield env.timeout(4)
 
-            self._estatisticas.tempos_preparo.append(env.now - tempo_inicial_preparo)
+            self._tempos_preparo.append(env.now - tempo_inicial_preparo)
 
             log('retira copo do freezer')
             preparo.evento_conclusao.succeed(value=copo)
@@ -332,91 +276,7 @@ class ModeloBarExpresso(sd.Modelo[_Metrica]):
 
 
 def main() -> None:
-    try:
-        with open(os.path.join(os.path.dirname(os.getcwd()), 'config.toml'), 'rb') as f:
-            dados = tomllib.load(f)
-    except FileNotFoundError:
-        dados = {}
-
-    dados_geral = dados.get('geral', {})
-    seed = dados_geral.get('seed')
-    tempo_maximo = dados_geral.get('tempo-maximo', 60)
-
-    dados_modelos = dados.get('modelos', {})
-    dados_modelo = dados_modelos.get('bar-expresso', {})
-    qtd_cadeiras = dados_modelo.get('qtd-cadeiras', 6)
-    qtd_funcionarios = dados_modelo.get('qtd-funcionarios', 2)
-    qtd_copos = dados_modelo.get('qtd-copos', 20)
-    qtd_copos_pia = dados_modelo.get('qtd-copos-pia', 6)
-
-    dados_grafico = dados.get('grafico', {})
-    deve_exibir_grafico = dados_grafico.get('exibir', False)
-    if not deve_exibir_grafico:
-        env = simpy.Environment()
-        modelo = ModeloBarExpresso(
-            seed=seed,
-            qtd_cadeiras=qtd_cadeiras,
-            qtd_funcionarios=qtd_funcionarios,
-            qtd_copos=qtd_copos,
-            qtd_copos_pia=qtd_copos_pia,
-            deve_exibir_log=True,
-        )
-        modelo.inicia(env)
-        env.run(until=tempo_maximo)
-
-        tempos_estadia_cliente = modelo.calcula_metrica(_Metrica.TEMPO_ESTADIA_CLIENTE)
-        tempos_espera_sentar_cliente = modelo.calcula_metrica(_Metrica.TEMPO_ESPERA_SENTAR_CLIENTE)
-        tempos_espera_pedir_cliente = modelo.calcula_metrica(_Metrica.TEMPO_ESPERA_PEDIR_CLIENTE)
-        tempos_espera_consumir_cliente = modelo.calcula_metrica(_Metrica.TEMPO_ESPERA_CONSUMIR_CLIENTE)
-        tempos_preparo = modelo.calcula_metrica(_Metrica.TEMPO_PREPARO)
-        print(f'Número de clientes: {len(tempos_estadia_cliente)}')
-        print(f'Número de pedidos: {len(tempos_espera_consumir_cliente)}')
-        log_stats('Tempo estadia (por cliente)', tempos_estadia_cliente)
-        log_stats('Tempo espera p/ sentar (por cliente)', tempos_espera_sentar_cliente)
-        log_stats('Tempo espera p/ pedir (por pedido)', tempos_espera_pedir_cliente)
-        log_stats('Tempo espera p/ consumir (por pedido)', tempos_espera_consumir_cliente)
-        log_stats('Tempo preparo (por pedido)', tempos_preparo)
-        return
-
-    def descritor_metrica(metrica: _Metrica) -> str:
-        match metrica:
-            case _Metrica.TEMPO_ESTADIA_CLIENTE:
-                return 'Estadia'
-            case _Metrica.TEMPO_ESPERA_PEDIR_CLIENTE:
-                return 'Espera p/ pedir'
-            case _Metrica.TEMPO_ESPERA_CONSUMIR_CLIENTE:
-                return 'Espera p/ consumir'
-            case _Metrica.TEMPO_ESPERA_SENTAR_CLIENTE:
-                return 'Espera p/ sentar'
-            case _Metrica.TEMPO_PREPARO:
-                return 'Preparo'
-            case _:
-                typing.assert_never(metrica)
-
-    sd.plot(
-        lambda: ModeloBarExpresso(
-            seed=seed,
-            qtd_cadeiras=qtd_cadeiras,
-            qtd_funcionarios=qtd_funcionarios,
-            qtd_copos=qtd_copos,
-            qtd_copos_pia=qtd_copos_pia,
-            deve_exibir_log=False,
-        ),
-        metricas=list(_Metrica),
-        descritor_metrica=descritor_metrica,
-        x_range=(30, 360, 30),
-        y_range=(0, 120, 15),
-    )
-
-
-def log_stats(prefix: str, values: list[float]) -> None:
-    def fmt(delta: float) -> str:
-        dt = arrow.utcnow().shift(minutes=delta)
-        return dt.humanize(locale='pt', only_distance=True, granularity=['hour', 'minute', 'second'])
-
-    mean = statistics.mean(values)
-    stdev = statistics.stdev(values)
-    print(f'{prefix}: {fmt(mean)} (± {stdev:.2f}), min={fmt(min(values))}, max={fmt(max(values))}')
+    sd.executa_script(ModeloBarExpresso)
 
 
 if __name__ == '__main__':

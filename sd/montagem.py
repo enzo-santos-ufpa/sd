@@ -1,98 +1,110 @@
 import abc
 import dataclasses
+import enum
+import functools
 import typing
 
-import matplotlib.lines
-import matplotlib.patches
-import matplotlib.pyplot as plt
-import numpy.random
 import simpy
 import simpy.resources.resource
 
-
-@dataclasses.dataclass
-class EstadoModeloMontagem:
-    rnd: numpy.random.Generator
-    resource_maquina: simpy.Resource
-    container_pecas: simpy.Container
-    container_parafusos: simpy.Container
-    container_pecas_fixadas: simpy.Container
+import sd
+from sd import Modelo
 
 
-class ModeloMontagem(abc.ABC):
-    _should_log: bool
-    _estado: EstadoModeloMontagem
+class _Metrica(enum.Enum):
+    TEMPO_ESPERA_PECAS = 0
+    TEMPO_ESPERA_PARAFUSOS = 1
+    TEMPO_ESPERA_MAQUINA_USINAGEM = 2
+    TEMPO_ESPERA_PECAS_FIXADAS = 3
+
+
+class ModeloMontagem(sd.Modelo[_Metrica]):
+    @dataclasses.dataclass
+    class _Estatisticas:
+        tempos_espera_pecas: list[float]
+        tempos_espera_parafusos: list[float]
+        tempos_espera_maquina_usinagem: list[float]
+        tempos_espera_pecas_fixadas: list[float]
+
+    _resource_maquina: simpy.Resource
+    _container_pecas: simpy.Container
+    _container_parafusos: simpy.Container
+    _container_pecas_fixadas: simpy.Container
+
     _pecas_fixadas: int
     _pecas_unidas: int
+    _estatisticas: _Estatisticas
 
-    def __init__(self, should_log: bool = False) -> None:
-        self._should_log = should_log
+    def __init__(self, *, deve_exibir_log: bool = False, seed: int | None = None) -> None:
+        super().__init__(
+            deve_exibir_log=deve_exibir_log,
+            seed=seed,
+        )
 
-    def _log(self, env: simpy.Environment, message: str) -> None:
-        if self._should_log:
-            print(f'{env.now:04.1f}: {message}')
-
-    @property
-    def pecas_unidas(self):
-        return self._pecas_unidas
-
-    @property
-    def pecas_fixadas(self):
-        return self._pecas_fixadas
-
-    def _monitora(self, env: simpy.Environment) -> typing.Generator[simpy.Event, None, None]:
-        rnd = self._estado.rnd
-        container_pecas = self._estado.container_pecas
-        container_parafusos = self._estado.container_parafusos
+    def _monitora(self, env: simpy.Environment) -> sd.Generator:
         while True:
             # A célula é abastecida em média a cada 40 minutos,
             # normalmente distribuído com desvio de 3min...
-            yield env.timeout(rnd.normal(40, scale=3))
+            yield env.timeout(abs(self._rnd.normal(40, scale=3)))
 
             # ...por pallets com 60 peças...
-            yield container_pecas.put(60 - container_pecas.level)
+            yield self._container_pecas.put(60 - self._container_pecas.level)
             # ...e caixas de parafusos que contêm de 990 a 1.010 unidades
-            yield container_parafusos.put(rnd.integers(low=990, high=1010) - container_parafusos.level)
+            qtd_parafusos = max(self._rnd.integers(990, 1010), self._container_parafusos.level) - self._container_parafusos.level
+            if qtd_parafusos > 0:
+                yield self._container_parafusos.put(qtd_parafusos)
 
-    def _fixa_pecas(self, env: simpy.Environment) -> typing.Generator[simpy.Event, None, None]:
-        rnd = self._estado.rnd
-
+    def _fixa_pecas(self, env: simpy.Environment) -> sd.Generator:
         # [Atividade] Fixa peças
         # A fixação das peças antes da usinagem é feita em um tempo médio
         # de 40 segundos, normalmente distribuído, com desvio-padrão de 5
         # segundos
-        yield env.timeout(rnd.normal(40 / 60, scale=5 / 60))
+        yield env.timeout(abs(self._rnd.normal(40 / 60, scale=5 / 60)))
         self._pecas_fixadas += 1
 
-    def _une_pecas(self, env: simpy.Environment) -> typing.Generator[simpy.Event, None, None]:
-        rnd = self._estado.rnd
-
+    def _une_pecas(self, env: simpy.Environment) -> sd.Generator:
         # [Atividade] Une peças
         # A união das peças por parafusos gasta entre 3,5 e 4 minutos,
         # segundo uma distribuição uniforme
-        yield env.timeout(rnd.uniform(low=3.5, high=4))
+        yield env.timeout(self._rnd.uniform(low=3.5, high=4))
         self._pecas_unidas += 1
 
-    def executa(self, env: simpy.Environment) -> None:
+    @typing.override
+    def inicia(self, env: simpy.Environment) -> None:
         self._pecas_unidas = 0
         self._pecas_fixadas = 0
-        self._estado = EstadoModeloMontagem(
-            rnd=numpy.random.default_rng(0),
-
-            # A máquina de usinagem
-            resource_maquina=simpy.Resource(env, capacity=1),
-
-            # A célula é abastecida por pallets com 60 peças
-            container_pecas=simpy.Container(env, init=60),
-            # A célula é abastecida por caixas de parafusos que contêm de 990 a 1.010 unidades
-            container_parafusos=simpy.Container(env, init=1010),
-
-            # As peças fixadas aguardando serem unidas
-            container_pecas_fixadas=simpy.Container(env, init=0),
+        self._estatisticas = ModeloMontagem._Estatisticas(
+            tempos_espera_pecas=[],
+            tempos_espera_parafusos=[],
+            tempos_espera_maquina_usinagem=[],
+            tempos_espera_pecas_fixadas=[],
         )
+
+        # A máquina de usinagem
+        self._resource_maquina = simpy.Resource(env, capacity=1)
+        # A célula é abastecida por pallets com 60 peças
+        self._container_pecas = simpy.Container(env, init=60, capacity=60)
+        # A célula é abastecida por caixas de parafusos que contêm de 990 a 1.010 unidades
+        self._container_parafusos = simpy.Container(env, init=1010)
+        # As peças fixadas aguardando serem unidas
+        self._container_pecas_fixadas = simpy.Container(env, init=0)
 
         env.process(self._monitora(env))
         self._executa(env)
+
+    @typing.override
+    def calcula_metrica(self, metrica: _Metrica) -> list[float]:
+        match metrica:
+            case _Metrica.TEMPO_ESPERA_PECAS:
+                return self._estatisticas.tempos_espera_pecas
+            case _Metrica.TEMPO_ESPERA_PARAFUSOS:
+                return self._estatisticas.tempos_espera_parafusos
+            case _Metrica.TEMPO_ESPERA_MAQUINA_USINAGEM:
+                return self._estatisticas.tempos_espera_maquina_usinagem
+            case _Metrica.TEMPO_ESPERA_PECAS_FIXADAS:
+                return self._estatisticas.tempos_espera_pecas_fixadas
+            case _:
+                typing.assert_never(metrica)
 
     @abc.abstractmethod
     def _executa(self, env: simpy.Environment) -> None:
@@ -102,49 +114,53 @@ class ModeloMontagem(abc.ABC):
 class ModeloMontagem1(ModeloMontagem):
     @typing.override
     def _executa(self, env: simpy.Environment) -> None:
-        env.process(self._executa_funcionario_1(env))
-        env.process(self._executa_funcionario_2(env))
+        for _ in range(10):
+            env.process(self._executa_funcionario_1(env))
+            env.process(self._executa_funcionario_2(env))
 
     def _executa_funcionario_1(self, env: simpy.Environment) -> typing.Generator[simpy.Event, None, None]:
-        estado = self._estado
-        resource_maquina = estado.resource_maquina
-        container_pecas = estado.container_pecas
-        container_pecas_fixadas = estado.container_pecas_fixadas
+        log = functools.partial(self._log, env, 'funcionário 1')
         while True:
             # (Fila) Aguarda ao menos 2 peças
-            yield container_pecas.get(2)
-            self._log(env, 'F1 obtém pares de peças')
+            tempo_inicial_espera_pecas = env.now
+            yield self._container_pecas.get(2)
+            log('obtém pares de peças')
+            self._estatisticas.tempos_espera_pecas.append(env.now - tempo_inicial_espera_pecas)
 
             yield env.process(self._fixa_pecas(env))
-            self._log(env, 'F1 fixa peças')
+            log('fixa peças')
 
-            with resource_maquina.request() as request_maquina:
+            with self._resource_maquina.request() as request_maquina:
+                tempo_inicial_espera_maquina = env.now
                 # (Fila) Aguarda máquina
                 yield request_maquina
+                self._estatisticas.tempos_espera_maquina_usinagem.append(env.now - tempo_inicial_espera_maquina)
 
-                self._log(env, 'F1 inicia usinagem')
-
+                log('inicia usinagem')
                 # [Atividade] Executa usinagem
                 yield env.timeout(3)
-                self._log(env, 'F1 termina usinagem')
+                log('termina usinagem')
 
-            yield container_pecas_fixadas.put(2)
+            yield self._container_pecas_fixadas.put(2)
 
     def _executa_funcionario_2(self, env: simpy.Environment) -> typing.Generator[simpy.Event, None, None]:
-        estado = self._estado
-        container_parafusos = estado.container_parafusos
-        container_pecas_fixadas = estado.container_pecas_fixadas
+        log = functools.partial(self._log, env, 'funcionário 2')
         while True:
-            # Apenas após peças fixadas
-            yield container_pecas_fixadas.get(2)
+            # Aguarda peças fixadas
+            tempo_inicial_espera_pecas_fixadas = env.now
+            yield self._container_pecas_fixadas.get(2)
+            log('recebe peças fixadas')
+            self._estatisticas.tempos_espera_pecas_fixadas.append(env.now - tempo_inicial_espera_pecas_fixadas)
 
             # (Fila) Aguarda ao menos 4 parafusos
             # Outro empregado une os pares de peças com 4 parafusos
-            yield container_parafusos.get(4)
-            self._log(env, 'F2 recebe peças fixadas')
+            tempo_inicial_espera_parafusos = env.now
+            yield self._container_parafusos.get(4)
+            log('recebe parafusos')
+            self._estatisticas.tempos_espera_parafusos.append(env.now - tempo_inicial_espera_parafusos)
 
             yield env.process(self._une_pecas(env))
-            self._log(env, 'F2 une peças')
+            log('une peças')
 
 
 class ModeloMontagem2(ModeloMontagem):
@@ -153,98 +169,84 @@ class ModeloMontagem2(ModeloMontagem):
     @typing.override
     def _executa(self, env: simpy.Environment) -> None:
         self._evento_usinagem = env.event()
-        env.process(self._executa_fixacao(env))
-        env.process(self._executa_uniao(env))
+        for _ in range(100):
+            env.process(self._executa_fixacao(env))
+            env.process(self._executa_uniao(env))
 
     def _executa_fixacao(self, env: simpy.Environment) -> typing.Generator[simpy.Event, None, None]:
-        estado = self._estado
-        resource_maquina = estado.resource_maquina
-        container_pecas = estado.container_pecas
-        container_pecas_fixadas = estado.container_pecas_fixadas
+        log = functools.partial(self._log, env, 'funcionário')
         while True:
             # (Fila) Aguarda ao menos 2 peças
-            yield container_pecas.get(2)
-            self._log(env, 'F1 obtém pares de peças')
+            yield self._container_pecas.get(2)
+            log('obtém pares de peças')
 
             yield env.process(self._fixa_pecas(env))
-            self._log(env, 'F1 fixa peças')
+            log('fixa peças')
 
-            with resource_maquina.request() as request_maquina:
+            with self._resource_maquina.request() as request_maquina:
                 # (Fila) Aguarda máquina
                 yield request_maquina
 
-                self._log(env, 'F1 inicia usinagem')
-
+                log('inicia usinagem')
                 self._evento_usinagem.succeed()
                 self._evento_usinagem = env.event()
 
                 # [Atividade] Executa usinagem
                 yield env.timeout(3)
-                self._log(env, 'F1 termina usinagem')
+                self._log(env, 'termina usinagem')
 
-            yield container_pecas_fixadas.put(2)
+            yield self._container_pecas_fixadas.put(2)
 
     def _executa_uniao(self, env: simpy.Environment) -> typing.Generator[simpy.Event, None, None]:
-        estado = self._estado
-        container_parafusos = estado.container_parafusos
         while True:
             # Apenas durante usinagem
             yield self._evento_usinagem
 
             # (Fila) Aguarda ao menos 4 parafusos
-            yield container_parafusos.get(4)
+            yield self._container_parafusos.get(4)
             self._log(env, 'F1 obtém peças fixadas')
 
             yield env.process(self._une_pecas(env))
             self._log(env, 'F1 une peças')
 
 
+class ExecutorModeloMontagem(sd.ExecutorModelo[_Metrica]):
+    def inicializa_modelo(
+            self,
+            dados_modelos: dict[str, dict[str, typing.Any]],
+            seed: int | None,
+            deve_exibir_log: bool,
+    ) -> Modelo[_Metrica]:
+        return ModeloMontagem1(deve_exibir_log=deve_exibir_log, seed=seed)
+
+    def lista_metricas(self) -> typing.Sequence[_Metrica]:
+        return list(_Metrica)
+
+    def exibe_modelo_executado(self, modelo: Modelo[_Metrica]) -> None:
+        for metrica in self.lista_metricas():
+            valores = modelo.calcula_metrica(metrica)
+            label = self.descreve_metrica(metrica)
+            self._log_stats(label, valores, time_unit='minutes')
+
+    def descreve_metrica(self, metrica: _Metrica) -> str:
+        match metrica:
+            case _Metrica.TEMPO_ESPERA_PECAS:
+                return 'Espera p/ receber peças'
+            case _Metrica.TEMPO_ESPERA_PARAFUSOS:
+                return 'Espera p/ receber parafusos'
+            case _Metrica.TEMPO_ESPERA_MAQUINA_USINAGEM:
+                return 'Espera p/ liberar máquina'
+            case _Metrica.TEMPO_ESPERA_PECAS_FIXADAS:
+                return 'Espera p/ receber peças unidas'
+            case _:
+                typing.assert_never(metrica)
+
+    modelo: ModeloMontagem
+
+
 def main() -> None:
-    # deve_mostrar_logs = '--no-logs' not in sys.argv
-    # deve_mostrar_grafico = '--graph' in sys.argv
-    deve_mostrar_logs = True
-    deve_mostrar_grafico = False
-    if not deve_mostrar_grafico:
-        modelo = ModeloMontagem1(should_log=deve_mostrar_logs)
-        env = simpy.Environment()
-        modelo.executa(env)
-        env.run(until=60)
-        return
-
-    modelos = [
-        ModeloMontagem1(should_log=deve_mostrar_logs),
-        ModeloMontagem2(should_log=deve_mostrar_logs),
-    ]
-
-    fig, ax = plt.subplots()
-    for i, modelo in enumerate(modelos):
-        plt_color = ['red', 'green'][i]
-
-        x = []
-        y_unidas = []
-        y_fixadas = []
-        for until in range(30, 180, 10):
-            env = simpy.Environment()
-            modelo.executa(env)
-            env.run(until=until)
-
-            x.append(until)
-            y_unidas.append(modelo.pecas_unidas)
-            y_fixadas.append(modelo.pecas_fixadas)
-
-        ax.plot(x, y_unidas, '-', color=plt_color)
-        ax.plot(x, y_fixadas, '--', color=plt_color)
-
-    ax.legend(handles=[
-        matplotlib.patches.Patch(color='red', label='Modelo 1'),
-        matplotlib.patches.Patch(color='green', label='Modelo 2'),
-        matplotlib.lines.Line2D([0, 1], [0, 1], linestyle='-', color='black', label='Peças unidas'),
-        matplotlib.lines.Line2D([0, 1], [0, 1], linestyle='--', color='black', label='Peças fixadas'),
-    ])
-    ax.set_xlabel('Minutos de execução')
-    ax.set_ylabel('Qtd de peças produzidas')
-
-    plt.show()
+    executor = ExecutorModeloMontagem()
+    sd.executa_script(executor, x_range=(30, 8 * 60 + 30, 60), y_range=(0, 30, 5))
 
 
 if __name__ == '__main__':
