@@ -56,10 +56,10 @@ class ModeloBarExpresso(metaclass=sd.ModeloMetaclass):
     _tempos_preparo: list[float] = sd.MetricaModelo(descricao='Tempo preparo')
 
     # Implementação do modelo
-    _store_funcionarios: simpy.Store
-    _store_copos: simpy.Store
-    _resource_cadeiras: simpy.Resource
-    _resource_lavagem: simpy.Resource
+    _store_funcionarios: simpy.Store = sd.RecursoModelo(descricao='Funcionários')
+    _store_copos: simpy.Store = sd.RecursoModelo(descricao='Copos')
+    _resource_cadeiras: simpy.Resource = sd.RecursoModelo(descricao='Cadeiras')
+    _resource_lavagem: simpy.Resource = sd.RecursoModelo(descricao='Copos (pia)')
 
     _eventos_preparo: simpy.Store
     _eventos_coleta: simpy.Store
@@ -97,6 +97,7 @@ class ModeloBarExpresso(metaclass=sd.ModeloMetaclass):
             # de acordo com uma função exponencial
             yield env.timeout(self._rnd.exponential(4))
 
+    @sd.entrypoint
     def _processa_cliente(self, env: simpy.Environment, id_cliente: int) -> sd.Generator:
         log = functools.partial(self._log, env, f'cliente {id_cliente}')
         log('chega')
@@ -252,6 +253,7 @@ class ModeloBarExpresso(metaclass=sd.ModeloMetaclass):
             self._tempos_preparo.append(env.now - tempo_inicial_preparo)
 
             log('retira copo do freezer')
+            copo.limpo = False
             preparo.evento_conclusao.succeed(value=copo)
 
     def _processa_funcionario__retirada(self, env: simpy.Environment) -> sd.Generator:
