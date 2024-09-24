@@ -92,7 +92,7 @@ class ModeloLavanderia(metaclass=sd.ModeloMetaclass):
 
 
 def main() -> None:
-    sd.executa_script(ModeloLavanderia)
+    sd.executa_script(ModeloLavanderia, x_range=(60, 360, 30), y_range=(0, 60, 15))
 
 
 if __name__ == '__main__':
