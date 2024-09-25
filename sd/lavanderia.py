@@ -25,7 +25,9 @@ class ModeloLavanderia(metaclass=sd.ModeloMetaclass):
     _tempos_estadia_cliente: list[float] = sd.MetricaModelo(descricao='Tempo estadia')
     _tempos_espera_cesto: list[float] = sd.MetricaModelo(descricao='Tempo espera p/ cesto')
     _tempos_espera_lavadora: list[float] = sd.MetricaModelo(descricao='Tempo espera p/ lavar')
+    _tempos_lavagem: list[float] = sd.MetricaModelo(descricao='Tempo lavagem')
     _tempos_espera_secadora: list[float] = sd.MetricaModelo(descricao='Tempo espera p/ secar')
+    _tempos_secagem: list[float] = sd.MetricaModelo(descricao='Tempo secagem')
 
     def executa(self, env: simpy.Environment) -> None:
         # Recursos
@@ -58,6 +60,7 @@ class ModeloLavanderia(metaclass=sd.ModeloMetaclass):
             # Utiliza a máquina
             log('utiliza máquina')
             yield env.timeout(25)
+            self._tempos_lavagem.append(25)
             log('termina de usar a máquina')
 
         with self._resource_cestos.request() as request_cesto:
@@ -85,14 +88,16 @@ class ModeloLavanderia(metaclass=sd.ModeloMetaclass):
             log('termina de carregar a secadora')
 
             # Secagem
+            tempo_inicial_secagem = env.now
             yield env.timeout(abs(self._rnd.normal(10, scale=4)))
+            self._tempos_secagem.append(env.now - tempo_inicial_secagem)
             log('termina a secagem')
 
         self._tempos_estadia_cliente.append(env.now - tempo_inicial_estadia_cliente)
 
 
 def main() -> None:
-    sd.executa_script(ModeloLavanderia, x_range=(60, 360, 30), y_range=(0, 60, 15))
+    sd.executa_script(ModeloLavanderia, x_range=(60, 8 * 60, 30), y_range=(0, 90, 15))
 
 
 if __name__ == '__main__':

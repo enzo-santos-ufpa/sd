@@ -101,6 +101,9 @@ class BaseEnvironment(simpy.Environment, abc.ABC):
     ) -> None:
         pass
 
+    def close(self) -> None:
+        pass
+
     def step(self) -> None:
         if self._queue:
             time, priority, event_id, event = self._queue[0]
@@ -126,12 +129,23 @@ class InteractiveEnvironment[M](BaseEnvironment):
     __state: InteractiveState | None
     __maxs: dict[int, float]
 
-    def __init__(self, m: M, initial_time: int = 0):
+    def __init__(self, m: M, initial_time: int = 0, fast_forward: bool = False) -> None:
         super().__init__(initial_time=initial_time)
         self.__m = m
+        self.__fast_forward = fast_forward
         plt.ion()
         self.__state = None
         self.__maxs = {}
+
+    def close(self) -> None:
+        super().close()
+
+        if self.__fast_forward and (state := self.__state):
+            state.figure.canvas.draw()
+            state.figure.canvas.flush_events()
+
+        plt.ioff()
+        plt.show()
 
     @typing.override
     def on_event(
@@ -195,8 +209,10 @@ class InteractiveEnvironment[M](BaseEnvironment):
                 max_value = max(self.__maxs.get(i, -math.inf), value)
                 self.__maxs[i] = max_value
                 state.max_rects[i].set_segments([np.array([[max_value, -0.2], [max_value, 0.2]])])
-            state.figure.canvas.draw()
-            state.figure.canvas.flush_events()
+
+            if not self.__fast_forward:
+                state.figure.canvas.draw()
+                state.figure.canvas.flush_events()
 
 
 def executa_script(
@@ -204,7 +220,6 @@ def executa_script(
         x_range: tuple[int, int, int] = (30, 360, 30),
         y_range: tuple[int, int, int] = (0, 120, 15),
 ) -> None:
-    print(os.getcwd())
     try:
         with open(os.path.join(os.getcwd(), 'config.toml'), 'rb') as f:
             dados = tomllib.load(f)
@@ -228,13 +243,15 @@ def executa_script(
         modelo = M.from_json(seed, deve_exibir_log, dados_modelos)
         env: BaseEnvironment
         if deve_exibir_grafico_interativo:
-            env = InteractiveEnvironment(modelo)
+            deve_pular_interacao = dados_grafico_interativo.get('pular', False)
+            env = InteractiveEnvironment(modelo, fast_forward=deve_pular_interacao)
         else:
             env = Environment()
 
         modelo.executa(env)
         env.run(until=tempo_maximo)
         modelo.exibe_estado()
+        env.close()
         return
 
     _plot(
